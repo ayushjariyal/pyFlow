@@ -27,7 +27,7 @@ openpyxl==3.1.5           # XLSX output for FILE_CONVERSION
 pytest==8.4.2
 httpx==0.28.1             # used by FastAPI's TestClient
 
-# --- Optional: PostgreSQL ---
-# To use Postgres instead of the default SQLite, uncomment the line below,
-# reinstall, and set DATABASE_URL (see .env.example).
-# psycopg2-binary==2.9.10
+# --- PostgreSQL driver ---
+# Used in deployment (Render/Railway/etc.). Harmless locally — SQLite is still
+# the default unless DATABASE_URL points at Postgres.
+psycopg2-binary==2.9.10

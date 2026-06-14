@@ -36,8 +36,19 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """The configured SQLAlchemy database URL."""
-        return self.DATABASE_URL
+        """The configured SQLAlchemy database URL.
+
+        Managed Postgres providers (Render, Heroku, Railway) hand out URLs that
+        start with `postgres://`, which SQLAlchemy 2.0 no longer accepts, and
+        without an explicit driver. Normalise both so the same URL works whether
+        it comes from a provider or is set by hand.
+        """
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = "postgresql+psycopg2://" + url[len("postgres://"):]
+        elif url.startswith("postgresql://"):
+            url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+        return url
 
     # --- Celery / Redis ---
     # Redis is used both as the Celery broker (the queue the web process pushes
