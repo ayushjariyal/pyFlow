@@ -294,7 +294,7 @@ frontend/src/     React dashboard (pages, components, hooks, api client)
 ```
 
 
-## Future Roadmap
+## Future Work
 
 1. Authentication
 2. Postgres as default
