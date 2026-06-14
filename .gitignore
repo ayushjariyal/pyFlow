@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Environment
+.env
+
+# Local SQLite database
+*.db
+
+# Uploaded / generated files
+backend/storage/
+backend/_test_storage/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (in case tooling runs from the root)
+node_modules/
+*.tsbuildinfo

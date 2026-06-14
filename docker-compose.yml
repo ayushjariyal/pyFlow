@@ -1,0 +1,77 @@
+# One-command local stack: Redis + API + Celery worker + frontend.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:5173 (the API docs are at http://localhost:8000/docs).
+#
+# The API and the worker share one image and one data volume. The volume holds
+# the SQLite database and the storage/ folder, so both processes read and write
+# the same files.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: ./backend
+    # Run migrations first, then start the API.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      DATABASE_URL: sqlite:////data/jobs.db
+      STORAGE_DIR: /data/storage
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - appdata:/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    # Linux containers can use the default prefork pool for real parallelism
+    # (no --pool=solo needed, unlike on Windows).
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      DATABASE_URL: sqlite:////data/jobs.db
+      STORAGE_DIR: /data/storage
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - appdata:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      # Wait for the API so the database is migrated before the worker runs tasks.
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Where the browser reaches the API (the host-published port).
+        VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  appdata:
