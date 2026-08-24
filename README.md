@@ -25,16 +25,6 @@ On top of single jobs there's a **workflow engine**. You define a DAG (tasks +
 dependencies) and it runs them in dependency order, with independent branches
 running in parallel. A task's output file becomes the input for its children.
 
-## Screenshots
-
-| Dashboard | Jobs |
-|---|---|
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Jobs](docs/screenshots/jobs.png) |
-
-| Workflow (DAG) | Metrics |
-|---|---|
-| ![Workflow](docs/screenshots/workflow.png) | ![Metrics](docs/screenshots/metrics.png) |
-
 ## Architecture
 
 ```mermaid
