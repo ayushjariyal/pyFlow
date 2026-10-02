@@ -1,29 +1,109 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { CodeBlock } from "../components/CodeBlock";
+import { Elapsed } from "../components/Elapsed";
 import { ErrorMessage } from "../components/ErrorMessage";
+import { Icon } from "../components/Icon";
+import { ProgressBar } from "../components/ProgressBar";
 import { Spinner } from "../components/Spinner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useJob } from "../hooks/useJob";
 import { downloadUrl, retryJob, toApiError, type ApiError } from "../services/api";
-import { JOB_TYPE_LABELS } from "../types/job";
-import { formatDateTime, formatDuration, jobFileName } from "../utils/format";
+import { JOB_TYPE_LABELS, type Job } from "../types/job";
+import {
+  baseName,
+  formatDateTime,
+  formatDuration,
+  formatTime,
+  jobFileName,
+  shortId,
+} from "../utils/format";
+import { JOB_TYPE_ICON } from "../utils/status";
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+const SKELETON_WIDTHS = ["62%", "84%", "45%", "70%"];
+
+function Field({
+  label,
+  mono = false,
+  children,
+}: {
+  label: string;
+  mono?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div>
-      <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
-        {label}
-      </dt>
-      <dd className="mt-1 text-sm text-slate-900">{children}</dd>
+      <dt className="eyebrow">{label}</dt>
+      <dd className={mono ? "mono" : undefined}>{children}</dd>
     </div>
   );
 }
 
-function JsonBlock({ value }: { value: unknown }) {
+function Step({
+  state,
+  icon,
+  spin = false,
+  label,
+  sub,
+}: {
+  state: string;
+  icon: string;
+  spin?: boolean;
+  label: string;
+  sub: React.ReactNode;
+}) {
   return (
-    <pre className="max-h-96 overflow-auto rounded-md bg-slate-900 p-3 text-xs text-slate-100">
-      {JSON.stringify(value, null, 2)}
-    </pre>
+    <div className={`lc-step ${state}`}>
+      <span className="lc-dot">
+        <Icon name={icon} weight="bold" spin={spin} />
+      </span>
+      <div>
+        <div className="lc-label">{label}</div>
+        <div className="lc-sub">{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+/** Queued → Running → Succeeded/Failed stepper. */
+function Lifecycle({ job }: { job: Job }) {
+  const stage = job.status === "PENDING" ? 0 : job.status === "RUNNING" ? 1 : 2;
+  const failed = job.status === "FAILED";
+
+  return (
+    <div className="lifecycle">
+      {stage === 0 ? (
+        <Step state="is-current st-RUNNING" icon="clock" label="Queued" sub={formatTime(job.created_at)} />
+      ) : (
+        <Step state="is-done" icon="check" label="Queued" sub={formatTime(job.created_at)} />
+      )}
+      <ProgressBar value={stage >= 1 ? 1 : 0} className="progress-thin lc-bar" />
+      {stage === 1 ? (
+        <Step
+          state="is-current st-RUNNING"
+          icon="circle-notch"
+          spin
+          label="Running"
+          // updated_at is stamped when the worker picks the job up.
+          sub={<Elapsed since={job.updated_at} />}
+        />
+      ) : stage > 1 ? (
+        <Step state="is-done" icon="check" label="Running" sub="done" />
+      ) : (
+        <Step state="is-todo" icon="circle" label="Running" sub="—" />
+      )}
+      <ProgressBar value={stage === 2 ? 1 : stage === 1 ? null : 0} className="progress-thin lc-bar" />
+      {stage === 2 ? (
+        <Step
+          state={`is-final st-${job.status}`}
+          icon={failed ? "x" : "check"}
+          label={failed ? "Failed" : "Succeeded"}
+          sub={formatDuration(job.execution_time)}
+        />
+      ) : (
+        <Step state="is-todo" icon="circle" label="Succeeded" sub="—" />
+      )}
+    </div>
   );
 }
 
@@ -49,26 +129,37 @@ export default function JobDetails() {
   }
 
   return (
-    <div className="space-y-4">
-      <Link to="/jobs" className="text-sm text-slate-600 hover:underline">
-        ← Back to jobs
+    <div className="stack" style={{ gap: 18 }}>
+      <Link to="/jobs" className="back-link">
+        <Icon name="arrow-left" />
+        Back to jobs
       </Link>
 
       {loading && <Spinner label="Loading job…" />}
       {error && <ErrorMessage error={error} />}
 
       {job && (
-        <div className="space-y-5 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="text-xl font-bold text-slate-900">
-              {JOB_TYPE_LABELS[job.job_type]}
-            </h1>
-            <StatusBadge status={job.status} />
+        <div className="panel job-panel rise" style={{ animationDelay: ".05s" }}>
+          <div className="job-head">
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <span className="job-mark">
+                <Icon name={JOB_TYPE_ICON[job.job_type]} />
+              </span>
+              <div>
+                <div className="kicker" style={{ marginBottom: 4 }}>
+                  Job · {shortId(job.id)}
+                </div>
+                <h1 className="job-title">{JOB_TYPE_LABELS[job.job_type]}</h1>
+              </div>
+            </div>
+            <StatusBadge status={job.status} size="lg" />
           </div>
 
-          <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Job ID">
-              <span className="font-mono break-all">{job.id}</span>
+          <Lifecycle job={job} />
+
+          <dl className="field-grid">
+            <Field label="Job ID" mono>
+              {job.id}
             </Field>
             <Field label="Input file">{jobFileName(job)}</Field>
             <Field label="Created">{formatDateTime(job.created_at)}</Field>
@@ -79,65 +170,70 @@ export default function JobDetails() {
 
           {/* Download generated output, when present */}
           {job.output_file_path && job.status === "SUCCESS" && (
-            <div>
-              <a
-                href={downloadUrl(job.id)}
-                className="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
-              >
-                ⬇ Download output
+            <div className="download-row pop">
+              <a href={downloadUrl(job.id)} className="btn btn-primary btn-lg btn-glow">
+                <Icon name="download-simple" weight="bold" />
+                Download output
               </a>
-              <span className="ml-2 text-xs text-slate-500">
-                {job.output_file_path.split("/").pop()}
-              </span>
+              <span className="mono hint">{baseName(job.output_file_path)}</span>
             </div>
           )}
 
-          <div>
-            <h2 className="mb-1 text-sm font-semibold text-slate-700">
-              Options
-            </h2>
-            <JsonBlock value={job.payload} />
+          <div className="stack" style={{ gap: 8 }}>
+            <div className="eyebrow">Options</div>
+            <CodeBlock value={job.payload} />
           </div>
 
           {job.status === "FAILED" ? (
-            <div>
-              <h2 className="mb-1 text-sm font-semibold text-red-700">Error</h2>
-              <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-                {typeof job.result?.error === "string"
-                  ? job.result.error
-                  : "The job failed. See details below."}
+            <div className="stack" style={{ gap: 10 }}>
+              <div className="eyebrow" style={{ color: "oklch(0.78 0.11 22)" }}>
+                Error
               </div>
-              {job.result && (
-                <div className="mt-2">
-                  <JsonBlock value={job.result} />
+              <div className="alert-error">
+                <Icon name="warning-circle" weight="bold" />
+                <div>
+                  {typeof job.result?.error === "string"
+                    ? job.result.error
+                    : "The job failed. See details below."}
                 </div>
-              )}
+              </div>
+              {job.result && <CodeBlock value={job.result} />}
+              <div>
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  disabled={retrying}
+                  className="btn btn-primary btn-lg"
+                >
+                  <Icon
+                    name="arrow-counter-clockwise"
+                    weight="bold"
+                    style={
+                      retrying
+                        ? { display: "inline-block", animation: "spin .9s linear infinite reverse" }
+                        : undefined
+                    }
+                  />
+                  {retrying ? "Retrying…" : "Retry job"}
+                </button>
+              </div>
+              {retryError && <ErrorMessage error={retryError} />}
             </div>
           ) : (
-            <div>
-              <h2 className="mb-1 text-sm font-semibold text-slate-700">
-                Result
-              </h2>
+            <div className="stack" style={{ gap: 8 }}>
+              <div className="eyebrow">Result</div>
               {job.result ? (
-                <JsonBlock value={job.result} />
+                <CodeBlock value={job.result} className="rise" />
               ) : (
-                <p className="text-sm text-slate-500">
-                  No result yet (job is {job.status.toLowerCase()}).
-                </p>
+                <div className="skeleton-box">
+                  {SKELETON_WIDTHS.map((w) => (
+                    <div key={w} className="skeleton-line" style={{ width: w }} />
+                  ))}
+                  <div className="hint" style={{ marginTop: 4, fontSize: 13 }}>
+                    No result yet (job is {job.status.toLowerCase()}).
+                  </div>
+                </div>
               )}
-            </div>
-          )}
-
-          {job.status === "FAILED" && (
-            <div className="space-y-2">
-              <button
-                onClick={handleRetry}
-                disabled={retrying}
-                className="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60"
-              >
-                {retrying ? "Retrying…" : "Retry job"}
-              </button>
-              {retryError && <ErrorMessage error={retryError} />}
             </div>
           )}
         </div>

@@ -1,8 +1,14 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { CodeBlock } from "../components/CodeBlock";
 import { ErrorMessage } from "../components/ErrorMessage";
+import { Icon } from "../components/Icon";
+import { WorkflowGraph } from "../components/WorkflowGraph";
 import { createWorkflow, toApiError, type ApiError } from "../services/api";
 import { JOB_TYPE_LABELS, JOB_TYPES } from "../types/job";
+import type { Edge, WorkflowDefinition } from "../types/workflow";
+import { DAG_SMALL, layoutDag, type DagTask } from "../utils/dag";
+import { JOB_TYPE_ICON } from "../utils/status";
 
 const TEMPLATE = JSON.stringify(
   {
@@ -21,41 +27,39 @@ const TEMPLATE = JSON.stringify(
 // A fuller, known-good example using ALL five task types. `analyze` runs on the
 // raw upload; `clean` produces a cleaned CSV that profile/convert/validate then
 // process in parallel.
-const EXAMPLE = JSON.stringify(
-  {
-    name: "Full Data Pipeline",
-    description: "Analyze raw data, clean it, then profile, convert and validate the cleaned output.",
-    tasks: [
-      { id: "analyze", type: "CSV_ANALYSIS" },
-      { id: "clean", type: "DATA_CLEANING" },
-      { id: "profile", type: "DATA_PROFILE_REPORT" },
-      {
-        id: "convert",
-        type: "FILE_CONVERSION",
-        payload: { output_format: "xlsx" },
-      },
-      {
-        id: "validate",
-        type: "BULK_DATA_VALIDATION",
-        payload: { required_columns: ["id"], id_column: "id" },
-      },
-    ],
-    dependencies: [
-      { from: "clean", to: "profile" },
-      { from: "clean", to: "convert" },
-      { from: "clean", to: "validate" },
-    ],
-  },
-  null,
-  2,
-);
+const EXAMPLE_DEF = {
+  name: "Full Data Pipeline",
+  description: "Analyze raw data, clean it, then profile, convert and validate the cleaned output.",
+  tasks: [
+    { id: "analyze", type: "CSV_ANALYSIS" },
+    { id: "clean", type: "DATA_CLEANING" },
+    { id: "profile", type: "DATA_PROFILE_REPORT" },
+    {
+      id: "convert",
+      type: "FILE_CONVERSION",
+      payload: { output_format: "xlsx" },
+    },
+    {
+      id: "validate",
+      type: "BULK_DATA_VALIDATION",
+      payload: { required_columns: ["id"], id_column: "id" },
+    },
+  ],
+  dependencies: [
+    { from: "clean", to: "profile" },
+    { from: "clean", to: "convert" },
+    { from: "clean", to: "validate" },
+  ],
+};
+const EXAMPLE = JSON.stringify(EXAMPLE_DEF, null, 2);
 
 const VALID_TYPES = new Set<string>(JOB_TYPES);
+const LINE_HEIGHT = 20;
 
 /**
  * Lightweight client-side validation so wrong `type`/`id`/`from`/`to` values get
  * a clear message before hitting the server (the server still does the full DAG
- * validation: cycles, self-deps, option schemas).
+ * validation and checks option schemas).
  */
 function validateDefinition(def: unknown): string | null {
   if (typeof def !== "object" || def === null || Array.isArray(def)) {
@@ -97,34 +101,85 @@ function validateDefinition(def: unknown): string | null {
   return null;
 }
 
+type Parsed =
+  | { ok: false; error: string; short: string }
+  | {
+      ok: true;
+      def: WorkflowDefinition;
+      tasks: DagTask[];
+      deps: Edge[];
+      /** Structural problem the preview can still draw around. */
+      graphError: string | null;
+      graphShort: string | null;
+    };
+
+function parseDefinition(text: string): Parsed {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      error: "Definition is not valid JSON. Check for missing commas or quotes.",
+      short: "Invalid JSON",
+    };
+  }
+  const problem = validateDefinition(raw);
+  if (problem) return { ok: false, error: problem, short: problem };
+
+  const def = raw as WorkflowDefinition;
+  const deps = def.dependencies ?? [];
+  const tasks = def.tasks.map((t): DagTask => ({ ref: t.id, type: t.type, status: "PENDING" }));
+  const selfDep = deps.find((d) => d.from === d.to);
+
+  let graphError: string | null = null;
+  let graphShort: string | null = null;
+  if (selfDep) {
+    graphError = `Invalid workflow: task "${selfDep.from}" depends on itself.`;
+    graphShort = "Self-dependency";
+  } else if (layoutDag(tasks, deps, DAG_SMALL).cycle) {
+    graphError = "Invalid workflow: the dependencies contain a cycle.";
+    graphShort = "Cycle detected";
+  }
+  return { ok: true, def, tasks, deps, graphError, graphShort };
+}
+
+function Code({ children }: { children: React.ReactNode }) {
+  return <code className="code-chip">{children}</code>;
+}
+
 export default function WorkflowCreate() {
   const navigate = useNavigate();
   const [text, setText] = useState(TEMPLATE);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
+  const parsed = useMemo(() => parseDefinition(text), [text]);
+  const lineCount = text.split("\n").length;
+
+  const validity = !parsed.ok
+    ? { status: "FAILED", icon: "x", label: parsed.short }
+    : parsed.graphShort
+      ? { status: "CANCELLED", icon: "warning", label: parsed.graphShort }
+      : { status: "SUCCESS", icon: "check", label: "Valid definition" };
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
-    let def: unknown;
-    try {
-      def = JSON.parse(text);
-    } catch {
-      setError({ message: "Definition is not valid JSON. Check for missing commas or quotes." });
+    if (!parsed.ok) {
+      setError({ message: parsed.error });
       return;
     }
-
-    const problem = validateDefinition(def);
-    if (problem) {
-      setError({ message: problem });
+    if (parsed.graphError) {
+      setError({ message: parsed.graphError });
       return;
     }
 
     setSubmitting(true);
     try {
       // The server does the full DAG validation (cycles, refs, option schemas).
-      const wf = await createWorkflow(def as never);
+      const wf = await createWorkflow(parsed.def);
       navigate(`/workflows/${wf.id}`);
     } catch (err) {
       setError(toApiError(err));
@@ -134,79 +189,124 @@ export default function WorkflowCreate() {
   }
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-900">New workflow</h1>
-      <p className="text-sm text-slate-600">
-        Define the DAG as JSON: a list of <code>tasks</code> (each with an{" "}
-        <code>id</code> and a <code>type</code>) and <code>dependencies</code>{" "}
-        (<code>from</code> → <code>to</code>). The server rejects cycles, self-
-        dependencies, and unknown references.
-      </p>
+    <div className="stack" style={{ gap: 22 }}>
+      <Link to="/workflows" className="back-link">
+        <Icon name="arrow-left" />
+        Back to workflows
+      </Link>
 
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="flex items-center justify-between">
-          <label className="text-sm font-medium text-slate-700">
-            Workflow definition (JSON)
-          </label>
-          <button
-            type="button"
-            onClick={() => {
-              setText(EXAMPLE);
-              setError(null);
-            }}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
-          >
-            Load example
-          </button>
+      <div className="rise" style={{ maxWidth: 720 }}>
+        <div className="kicker kicker-line">Define a DAG</div>
+        <h1 className="page-title" style={{ marginBottom: 12 }}>
+          New workflow
+        </h1>
+        <p className="lede" style={{ lineHeight: 1.7 }}>
+          Define the DAG as JSON: a list of <Code>tasks</Code> (each with an{" "}
+          <Code>id</Code> and a <Code>type</Code>) and <Code>dependencies</Code>{" "}
+          (<Code>from</Code> → <Code>to</Code>). The server rejects cycles, self-
+          dependencies, and unknown references.
+        </p>
+      </div>
+
+      <div className="split">
+        <form onSubmit={handleSubmit} className="panel split-pane rise" style={{ animationDelay: ".08s" }}>
+          <div className="pane-head">
+            <label htmlFor="workflow-definition" className="label-sm">
+              Workflow definition (JSON)
+            </label>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span className={`badge badge-note st-${validity.status}`} title={validity.label}>
+                <Icon name={validity.icon} weight="bold" />
+                <span className="truncate">{validity.label}</span>
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  setText(EXAMPLE);
+                  setError(null);
+                }}
+              >
+                <Icon name="sparkle" />
+                Load example
+              </button>
+            </div>
+          </div>
+          <div className={`editor${parsed.ok ? "" : " is-invalid"}`}>
+            <div className="editor-gutter" aria-hidden="true">
+              {Array.from({ length: lineCount }, (_, i) => (
+                <div key={i}>{i + 1}</div>
+              ))}
+            </div>
+            <textarea
+              id="workflow-definition"
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                setError(null);
+              }}
+              spellCheck={false}
+              wrap="off"
+              style={{ height: lineCount * LINE_HEIGHT + 22 }}
+            />
+          </div>
+          {error && <ErrorMessage error={error} />}
+          <div>
+            <button type="submit" disabled={submitting} className="btn btn-primary btn-lg btn-glow">
+              <Icon name={submitting ? "circle-notch" : "plus"} weight="bold" spin={submitting} />
+              {submitting ? "Creating…" : "Create workflow"}
+            </button>
+          </div>
+        </form>
+
+        <div className="panel split-pane rise" style={{ animationDelay: ".14s" }}>
+          <div className="pane-head" style={{ flexWrap: "nowrap" }}>
+            <span className="label-sm">Live preview</span>
+            {parsed.ok && (
+              <span style={{ fontSize: 12, color: "color-mix(in srgb, var(--color-text) 50%, transparent)" }}>
+                {parsed.tasks.length} tasks · {parsed.deps.length} dependencies
+              </span>
+            )}
+          </div>
+          {parsed.ok ? (
+            <WorkflowGraph tasks={parsed.tasks} dependencies={parsed.deps} preview />
+          ) : (
+            <div className="dag-empty">
+              <div>
+                <Icon name="graph" />
+                Fix the definition to preview the DAG.
+              </div>
+            </div>
+          )}
         </div>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={18}
-          spellCheck={false}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-        />
-        {error && <ErrorMessage error={error} />}
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60"
-        >
-          {submitting ? "Creating…" : "Create workflow"}
-        </button>
-      </form>
+      </div>
 
       {/* --- Reference: valid task types + a known-good example --- */}
-      <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+      <div className="panel-quiet reference rise" style={{ animationDelay: ".2s" }}>
         <div>
-          <h2 className="text-sm font-semibold text-slate-800">
-            Valid task <code>type</code> values
+          <h2>
+            Valid task <code className="code-inline" style={{ fontSize: ".9em" }}>type</code> values
           </h2>
-          <div className="mt-2 flex flex-wrap gap-2">
+          <div className="type-chips">
             {JOB_TYPES.map((t) => (
-              <span
-                key={t}
-                title={JOB_TYPE_LABELS[t]}
-                className="rounded-full bg-white px-2.5 py-1 font-mono text-xs text-slate-700 ring-1 ring-inset ring-slate-300"
-              >
+              <span key={t} title={JOB_TYPE_LABELS[t]} className="type-chip">
+                <Icon name={JOB_TYPE_ICON[t]} />
                 {t}
               </span>
             ))}
           </div>
-          <p className="mt-2 text-xs text-slate-500">
-            Per-task options go in an optional <code>payload</code> — e.g.{" "}
-            <code>{'{"output_format": "xlsx"}'}</code> for FILE_CONVERSION, or{" "}
-            <code>{'{"required_columns": ["id"], "id_column": "id"}'}</code> for
+          <p>
+            Per-task options go in an optional <code className="code-inline">payload</code> — e.g.{" "}
+            <code className="code-inline">{'{"output_format": "xlsx"}'}</code> for FILE_CONVERSION, or{" "}
+            <code className="code-inline">{'{"required_columns": ["id"], "id_column": "id"}'}</code> for
             BULK_DATA_VALIDATION.
           </p>
         </div>
 
         <div>
-          <h2 className="text-sm font-semibold text-slate-800">Example</h2>
-          <pre className="mt-2 overflow-x-auto rounded-md bg-slate-900 p-3 text-xs text-slate-100">
-            {EXAMPLE}
-          </pre>
-          <p className="mt-1 text-xs text-slate-500">
+          <h2 style={{ marginBottom: 10 }}>Example</h2>
+          <CodeBlock value={EXAMPLE_DEF} maxHeight={360} />
+          <p style={{ marginTop: 8, lineHeight: "inherit" }}>
             Tip: common mistakes are using a comma vs. a period between fields,
             and a type that isn't in the list above. Use “Load example” to start
             from a valid definition.

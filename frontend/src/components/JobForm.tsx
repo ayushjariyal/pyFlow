@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { useJob } from "../hooks/useJob";
 import { toApiError, uploadJob, type ApiError } from "../services/api";
 import {
   JOB_TYPE_LABELS,
@@ -7,23 +8,50 @@ import {
   type Job,
   type JobType,
 } from "../types/job";
+import { sampleCsvFile } from "../utils/sampleCsv";
+import { JOB_TYPE_HELP, JOB_TYPE_ICON } from "../utils/status";
 import { ErrorMessage } from "./ErrorMessage";
+import { Icon } from "./Icon";
+import { ProgressBar } from "./ProgressBar";
 import { StatusBadge } from "./StatusBadge";
 
-const HELP: Record<JobType, string> = {
-  CSV_ANALYSIS: "Detect columns, count rows, missing values, types and stats.",
-  DATA_CLEANING: "Remove duplicate rows, trim whitespace, report missing values.",
-  FILE_CONVERSION: "Convert the CSV to JSON or XLSX.",
-  DATA_PROFILE_REPORT: "Generate an HTML data-profile report.",
-  BULK_DATA_VALIDATION: "Validate required columns and duplicate ids.",
-};
+const FORMATS = [
+  { value: "json", label: "JSON" },
+  { value: "xlsx", label: "XLSX" },
+] as const;
+
+type OutputFormat = (typeof FORMATS)[number]["value"];
+
+/** Confirmation card that keeps following the job it just created. */
+function CreatedJob({ job: created }: { job: Job }) {
+  const { job: polled } = useJob(created.id, 2000);
+  const job = polled ?? created;
+  const progress = job.status === "PENDING" ? 0.08 : job.status === "RUNNING" ? null : 1;
+
+  return (
+    <div className="alert-success pop">
+      <div className="created-head">
+        <Icon name="check-circle" weight="fill" />
+        <span className="created-title">Job created!</span>
+        <StatusBadge status={job.status} />
+      </div>
+      <div style={{ fontSize: 13, color: "color-mix(in srgb, var(--color-text) 72%, transparent)" }}>
+        ID: <span className="mono" style={{ fontSize: 12 }}>{job.id}</span>
+      </div>
+      <ProgressBar value={progress} className="progress-success" />
+      <Link to={`/jobs/${job.id}`} className="arrow-link">
+        View job details <Icon name="arrow-right" weight="bold" />
+      </Link>
+    </div>
+  );
+}
 
 export function JobForm() {
   const [jobType, setJobType] = useState<JobType>("CSV_ANALYSIS");
   const [file, setFile] = useState<File | null>(null);
 
   // Per-type options.
-  const [outputFormat, setOutputFormat] = useState<"json" | "xlsx">("json");
+  const [outputFormat, setOutputFormat] = useState<OutputFormat>("json");
   const [requiredColumns, setRequiredColumns] = useState("");
   const [idColumn, setIdColumn] = useState("");
 
@@ -43,6 +71,11 @@ export function JobForm() {
       };
     }
     return {};
+  }
+
+  function pickFile(next: File | null) {
+    setFile(next);
+    setError(null);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -65,120 +98,143 @@ export function JobForm() {
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="space-y-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
-    >
-      <div>
-        <label className="mb-1 block text-sm font-medium text-slate-700">
-          Job type
-        </label>
-        <select
-          value={jobType}
-          onChange={(e) => {
-            setJobType(e.target.value as JobType);
-            setError(null);
-            setCreatedJob(null);
-          }}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-        >
-          {JOB_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {JOB_TYPE_LABELS[t]}
-            </option>
-          ))}
-        </select>
-        <p className="mt-1 text-xs text-slate-500">{HELP[jobType]}</p>
+    <form onSubmit={handleSubmit} className="panel job-form rise" style={{ animationDelay: ".08s" }}>
+      <div className="stack" style={{ gap: 10 }}>
+        <div className="label-sm">Job type</div>
+        <div className="type-grid">
+          {JOB_TYPES.map((t, i) => {
+            const selected = t === jobType;
+            return (
+              <button
+                key={t}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => {
+                  setJobType(t);
+                  setError(null);
+                  setCreatedJob(null);
+                }}
+                className={`type-card${selected ? " is-selected" : ""}`}
+                style={{ animationDelay: `${(0.12 + i * 0.05).toFixed(2)}s` }}
+              >
+                <div className="type-card-top">
+                  <span className={`icon-tile${selected ? " is-on" : ""}`}>
+                    <Icon name={JOB_TYPE_ICON[t]} />
+                  </span>
+                  <span className="type-check">
+                    <Icon name="check-circle" weight="fill" />
+                  </span>
+                </div>
+                <div className="type-card-label">{JOB_TYPE_LABELS[t]}</div>
+                <div className="type-card-help">{JOB_TYPE_HELP[t]}</div>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <div>
-        <label className="mb-1 block text-sm font-medium text-slate-700">
-          CSV file
+      <div className="stack" style={{ gap: 8 }}>
+        <div className="label-sm">CSV file</div>
+        <label className={`dropzone${file ? " has-file" : ""}`}>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+          />
+          <span className={`icon-tile icon-tile-lg${file ? " is-on" : ""}`}>
+            <Icon name={file ? "file-csv" : "upload-simple"} />
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="truncate" style={{ fontSize: 14 }}>
+              {file ? file.name : "Choose a CSV file"}
+            </div>
+            <div className="hint">
+              {file ? "Ready to upload" : ".csv up to your worker’s limit"}
+            </div>
+          </div>
+          <span className="btn btn-secondary" style={{ pointerEvents: "none", fontSize: 13 }}>
+            Browse
+          </span>
         </label>
-        <input
-          type="file"
-          accept=".csv,text/csv"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-700"
-        />
-        {file && (
-          <p className="mt-1 text-xs text-slate-500">Selected: {file.name}</p>
-        )}
+        <div className="hint">
+          No CSV handy?{" "}
+          <button type="button" className="link" onClick={() => pickFile(sampleCsvFile())}>
+            Use sample.csv
+          </button>
+        </div>
       </div>
 
       {/* Per-type options */}
       {jobType === "FILE_CONVERSION" && (
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">
-            Output format
-          </label>
-          <select
-            value={outputFormat}
-            onChange={(e) => setOutputFormat(e.target.value as "json" | "xlsx")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          >
-            <option value="json">JSON</option>
-            <option value="xlsx">XLSX</option>
-          </select>
+        <div className="stack rise" style={{ gap: 8, animationDuration: ".45s" }}>
+          <div className="label-sm">Output format</div>
+          <div className="seg" style={{ alignSelf: "flex-start" }}>
+            {FORMATS.map((f) => (
+              <button
+                key={f.value}
+                type="button"
+                aria-pressed={outputFormat === f.value}
+                onClick={() => setOutputFormat(f.value)}
+                className={`seg-opt${outputFormat === f.value ? " is-active" : ""}`}
+                style={{ minWidth: 64, justifyContent: "center" }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
       {jobType === "BULK_DATA_VALIDATION" && (
-        <div className="space-y-3">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
-              Required columns (comma-separated)
-            </label>
+        <div
+          className="rise"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: 12,
+            animationDuration: ".45s",
+          }}
+        >
+          <div className="field">
+            <label htmlFor="required-columns">Required columns (comma-separated)</label>
             <input
+              id="required-columns"
+              className="input"
               type="text"
               value={requiredColumns}
               onChange={(e) => setRequiredColumns(e.target.value)}
               placeholder="id, name, email"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
             />
           </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
-              Unique id column (optional)
-            </label>
+          <div className="field">
+            <label htmlFor="id-column">Unique id column (optional)</label>
             <input
+              id="id-column"
+              className="input"
               type="text"
               value={idColumn}
               onChange={(e) => setIdColumn(e.target.value)}
               placeholder="id"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
             />
           </div>
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={submitting}
-        className="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {submitting ? "Uploading…" : "Upload & run"}
-      </button>
-
-      {error && <ErrorMessage error={error} />}
-
-      {createdJob && (
-        <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-green-800">Job created!</span>
-            <StatusBadge status={createdJob.status} />
-          </div>
-          <p className="mt-1 text-green-800">
-            ID: <span className="font-mono">{createdJob.id}</span>
-          </p>
-          <Link
-            to={`/jobs/${createdJob.id}`}
-            className="mt-2 inline-block font-medium text-green-700 underline hover:text-green-900"
-          >
-            View job details →
-          </Link>
+      <div className="stack" style={{ gap: 12 }}>
+        <div>
+          <button type="submit" disabled={submitting} className="btn btn-primary btn-lg btn-glow">
+            <Icon
+              name={submitting ? "circle-notch" : "arrow-right"}
+              weight="bold"
+              spin={submitting}
+            />
+            {submitting ? "Uploading…" : "Upload & run"}
+          </button>
         </div>
-      )}
+        {submitting && <ProgressBar value={null} className="progress-thin" />}
+        {error && <ErrorMessage error={error} />}
+        {createdJob && <CreatedJob key={createdJob.id} job={createdJob} />}
+      </div>
     </form>
   );
 }
