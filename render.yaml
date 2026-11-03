@@ -1,6 +1,7 @@
 # Render Blueprint — provisions the backend, a Postgres DB, and Redis in one go.
 # In Render: New + → Blueprint → connect this repo. Everything below is created
-# automatically and redeploys whenever you push to the connected branch.
+# automatically. Deploys are triggered by the GitHub Actions pipeline
+# (.github/workflows/ci.yml) only after all tests pass, via a deploy hook.
 #
 # Free tier notes:
 #   - The web service sleeps after ~15 min idle and cold-starts on the next
@@ -26,6 +27,7 @@ services:
     name: jobplatform-api
     runtime: python
     plan: free
+    autoDeploy: false        # CI deploys via deploy hook after tests pass
     buildCommand: pip install -r backend/requirements.txt
     startCommand: bash backend/start.sh
     healthCheckPath: /health

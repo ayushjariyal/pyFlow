@@ -25,6 +25,7 @@ openpyxl==3.1.5           # XLSX output for FILE_CONVERSION
 
 # Testing
 pytest==8.4.2
+pytest-cov==7.1.0        # coverage report + 90% gate in CI
 httpx==0.28.1             # used by FastAPI's TestClient
 
 # --- PostgreSQL driver ---

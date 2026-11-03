@@ -11,7 +11,7 @@ avoid importing the worker module here (which would create an import cycle).
 
 import logging
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
@@ -163,12 +163,15 @@ def handle_task_success(
     if workflow is None or workflow.status != WorkflowStatus.RUNNING:
         return  # cancelled/failed elsewhere — stop advancing
 
-    # Promote any child whose dependencies are now all satisfied.
+    # Promote any child whose dependencies are now all satisfied. With several
+    # parents finishing at once on different workers, more than one may get here;
+    # the atomic claim makes sure only one of them dispatches the child.
     for child in _children(db, task.id):
-        if child.status != TaskStatus.PENDING:
-            continue
         parents = _parents(db, child.id)
         if all(p.status == TaskStatus.SUCCESS for p in parents):
+            if not _claim_task(db, child.id):
+                continue  # another worker already claimed this child
+            db.refresh(child)
             child.input_file_path = _resolve_child_input(parents, workflow)
             _dispatch_task(db, child)
 
@@ -209,6 +212,23 @@ def handle_task_failure(db: Session, task_id, error: str, elapsed: float) -> Non
 
 
 # --- internals ------------------------------------------------------------
+def _claim_task(db: Session, task_id) -> bool:
+    """Atomically move a task PENDING -> READY.
+
+    Runs as a single conditional UPDATE, so if several workers race to claim the
+    same task, the database lets exactly one of them change the row. Returns True
+    only for that winner.
+    """
+    result = db.execute(
+        update(WorkflowTask)
+        .where(WorkflowTask.id == task_id, WorkflowTask.status == TaskStatus.PENDING)
+        .values(status=TaskStatus.READY)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return result.rowcount == 1
+
+
 def _dispatch_task(db: Session, task: WorkflowTask, countdown: int = 0) -> None:
     """Mark a task READY and enqueue it on Celery (parallel by default)."""
     # Lazy import to avoid an import cycle (worker imports this engine). Using the

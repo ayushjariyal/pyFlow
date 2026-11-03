@@ -101,3 +101,9 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_jobs_celery_task_id'), table_name='jobs')
     op.drop_table('jobs')
     # ### end Alembic commands ###
+
+    # PostgreSQL keeps enum types after their tables are dropped, so a later
+    # `upgrade` would fail with "type already exists". No-op on SQLite.
+    bind = op.get_bind()
+    for enum_name in ('task_status', 'workflow_status', 'job_status', 'job_type_enum'):
+        sa.Enum(name=enum_name).drop(bind, checkfirst=True)
